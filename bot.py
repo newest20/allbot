@@ -3,6 +3,8 @@ import logging
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telethon.sync import TelegramClient
+from telegram.helpers import escape_markdown
 
 # Настройка логирования
 logging.basicConfig(
@@ -11,9 +13,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загрузка токена из переменных окружения
+# Загрузка токенов из переменных окружения
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+API_ID = os.getenv('API_ID')
+API_HASH = os.getenv('API_HASH')
+
+# Инициализация Telethon клиента
+telethon_client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=TOKEN)
+
+
+async def get_chat_members(chat_id):
+    """Получаем список участников чата с помощью Telethon"""
+    try:
+        members = []
+        async for user in telethon_client.iter_participants(chat_id):
+            if not user.bot:  # Пропускаем ботов
+                members.append({
+                    'id': user.id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'username': user.username,
+                    'full_name': f"{user.first_name or ''} {user.last_name or ''}".strip()
+                })
+        return members
+    except Exception as e:
+        logger.error(f"Telethon error: {e}")
+        return None
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
@@ -21,6 +48,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Привет! Я бот для тега всех участников чата. "
         "Используйте команду /all или напишите @all для упоминания всех участников."
     )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
@@ -33,6 +61,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text)
 
+
 async def mention_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /all и @all"""
     if update.message.chat.type not in ['group', 'supergroup']:
@@ -40,39 +69,45 @@ async def mention_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     try:
-        # Получаем список участников чата
-        members = await context.bot.get_chat_members(update.message.chat.id)
-        
+        # Получаем список участников чата через Telethon
+        members = await get_chat_members(update.message.chat.id)
+
+        if members is None:
+            await update.message.reply_text(
+                "Произошла ошибка при получении списка участников. "
+                "Попробуйте позже."
+            )
+            return
+
+        if not members:
+            await update.message.reply_text("В чате нет участников для упоминания!")
+            return
+
         # Формируем список упоминаний
         mentions = []
         for member in members:
-            user = member.user
-            if not user.is_bot:  # Пропускаем ботов
-                if user.username:
-                    mentions.append(f"@{user.username}")
-                else:
-                    # Экранируем специальные символы для MarkdownV2
-                    name = user.full_name.replace('_', '\\_').replace('*', '\\*')
-                    mentions.append(f"[{name}](tg://user?id={user.id})")
-        
-        if not mentions:
-            await update.message.reply_text("В чате нет участников для упоминания!")
-            return
+            if member.get('username'):
+                mentions.append(f"@{member['username']}")
+            else:
+                # Экранируем все специальные символы для MarkdownV2
+                name = escape_markdown(member['full_name'], version=2)
+                mentions.append(f"[{name}](tg://user?id={member['id']})")
 
         # Отправляем сообщение с упоминаниями
         message = ", ".join(mentions)
         await update.message.reply_text(
             message,
-            parse_mode='MarkdownV2',
+            parse_mode=None,
             disable_web_page_preview=True
         )
 
     except Exception as e:
-        logger.error(f"Ошибка при получении списка участников: {e}")
+        logger.error(f"Ошибка при упоминании участников: {e}")
         await update.message.reply_text(
-            "Произошла ошибка при получении списка участников. "
-            "Убедитесь, что у бота есть права на чтение списка участников."
+            "Произошла ошибка при упоминании участников. "
+            "Попробуйте позже."
         )
+
 
 def main() -> None:
     """Запуск бота"""
@@ -88,5 +123,6 @@ def main() -> None:
     # Запускаем бота
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+
 if __name__ == '__main__':
-    main() 
+    main()
